@@ -36,15 +36,11 @@ COLUMN_MAP = {
     "mainPrdctNm": "대표품명"
 }
 
-# --- 세션 상태 초기화 ---
 if 'raw_data' not in st.session_state:
     st.session_state['raw_data'] = None
 if 'query_log' not in st.session_state:
     st.session_state['query_log'] = ""
 
-# -----------------------------------------
-# API 관련 함수들
-# -----------------------------------------
 def fetch_api(params, max_retry=5):
     for attempt in range(max_retry):
         try:
@@ -64,9 +60,6 @@ def parse(data):
     if isinstance(items, dict): items = [items]
     return pd.DataFrame(items)
 
-# -----------------------------------------
-# 사이드바 설정
-# -----------------------------------------
 with st.sidebar:
     st.header("⚙️ 1. 데이터 수집 설정")
     api_key = st.text_input("API 인증키 (Encoding)", type="password")
@@ -80,11 +73,8 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("🎯 2. 수집된 결과 내 필터")
     corp_filter = st.text_input("업체명 필터 (실시간)")
-    div_filter = st.text_input("기업구분명 필터 (실시간)", help="예: 중소기업, 중견기업, 대기업 등")
+    div_filter = st.text_input("기업구분명 필터 (실시간)")
 
-# -----------------------------------------
-# 1. API 데이터 수집 (버튼 클릭 시)
-# -----------------------------------------
 if search_button:
     if not api_key:
         st.error("⚠️ API 인증키를 입력해주세요.")
@@ -128,52 +118,57 @@ if search_button:
             if all_data:
                 combined_df = pd.concat(all_data, ignore_index=True)
                 
-                # 금액 데이터 수치 변환
+                # 🛡️ 컬럼 존재 여부 확인 후 수치 변환 (오류 방지)
                 if "prdctAmt" in combined_df.columns:
                     combined_df["prdctAmt"] = pd.to_numeric(combined_df["prdctAmt"], errors="coerce").fillna(0)
                 
-                # 🔥 컬럼명 한글 변환 적용
+                # 🔥 'dlvrReqChngNo'가 없는 경우 0으로 생성하여 오류 방지
+                if "dlvrReqChngNo" in combined_df.columns:
+                    combined_df["dlvrReqChngNo"] = pd.to_numeric(combined_df["dlvrReqChngNo"], errors="coerce").fillna(0)
+                else:
+                    combined_df["dlvrReqChngNo"] = 0
+
+                # 최신 차수 필터링 (컬럼이 있을 때만 실행)
+                if "dlvrReqNo" in combined_df.columns:
+                    combined_df = combined_df.sort_values(by=["dlvrReqNo", "dlvrReqChngNo"], ascending=[True, False])
+                    combined_df = combined_df.drop_duplicates(subset=["dlvrReqNo"], keep="first")
+                
+                # 컬럼명 한글 변환
                 combined_df = combined_df.rename(columns=COLUMN_MAP)
                 
                 st.session_state['raw_data'] = combined_df
                 st.session_state['query_log'] = f"{start} ~ {end} (품목: {target_product if target_product else '전체'})"
-                st.success(f"✅ 수집 및 한글 변환 완료!")
+                st.success(f"✅ 데이터 처리가 완료되었습니다.")
             else:
                 st.warning("⚠️ 해당 조건으로 검색된 데이터가 없습니다.")
                 st.session_state['raw_data'] = None
 
         except Exception as e:
-            st.error(f"❌ 오류: {e}")
+            st.error(f"❌ 처리 중 오류 발생: {e}")
 
-# -----------------------------------------
-# 2. 실시간 다중 필터 및 표시
-# -----------------------------------------
+# --- 결과 표시 부분 (생략 없이 동일 유지) ---
 if st.session_state['raw_data'] is not None:
     df = st.session_state['raw_data'].copy()
 
-    # 업체명 필터 (이미 한글로 변환된 상태이므로 한글 컬럼명 사용)
     if corp_filter.strip():
         col = "업체명" if "업체명" in df.columns else "corpNm"
         df = df[df[col].astype(str).str.contains(corp_filter.strip(), case=False, na=False)]
     
-    # 기업구분명 필터
     if div_filter.strip():
         col = "기업구분" if "기업구분" in df.columns else "corpEntrprsDivNmNm"
         df = df[df[col].astype(str).str.contains(div_filter.strip(), case=False, na=False)]
 
     st.info(f"📋 수집 기준: {st.session_state['query_log']}")
     
-    # 메트릭
     c1, c2, c3 = st.columns(3)
-    c1.metric("수집된 총 건수", f"{len(st.session_state['raw_data']):,} 건")
+    c1.metric("최종 차수 데이터 총 합", f"{len(st.session_state['raw_data']):,} 건")
     c2.metric("현재 필터 결과", f"{len(df):,} 건")
     amt_col = "금액" if "금액" in df.columns else "prdctAmt"
     if amt_col in df.columns:
         c3.metric("표시 총액", f"{df[amt_col].sum():,.0f} 원")
 
-    # 업체별 합계
     st.markdown("---")
-    st.subheader("🏢 업체별 합계 (필터 결과)")
+    st.subheader("🏢 업체별 합계")
     corp_col = "업체명" if "업체명" in df.columns else "corpNm"
     if not df.empty and corp_col in df.columns:
         summary = df.groupby(corp_col)[amt_col].agg(['sum', 'count']).reset_index()
@@ -181,17 +176,15 @@ if st.session_state['raw_data'] is not None:
         summary = summary.sort_values("합계금액", ascending=False)
         st.dataframe(summary.style.format({"합계금액": "{:,.0f}원", "건수": "{:,}건"}), use_container_width=True)
 
-    # 상세 내역
     st.subheader("📋 상세 리스트")
     st.dataframe(df, use_container_width=True)
 
-    # 엑셀 다운로드
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df.to_excel(writer, sheet_name="상세내역", index=False)
         if 'summary' in locals():
             summary.to_excel(writer, sheet_name="업체별합계", index=False)
     output.seek(0)
-    st.download_button(label="📊 한글 엑셀 다운로드", data=output, 
-                       file_name=f"조달청_한글결과_{datetime.now().strftime('%H%M%S')}.xlsx",
+    st.download_button(label="📊 엑셀 다운로드", data=output, 
+                       file_name=f"조달청_결과_{datetime.now().strftime('%H%M%S')}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
