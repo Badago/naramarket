@@ -7,233 +7,219 @@ import os
 from datetime import datetime, timedelta
 from io import BytesIO
 
-# --- 파일 저장 경로 설정 ---
+# =========================================================
+# 🛠️ [사용자 설정] 표 크기 및 컬럼 너비 조절 (픽셀 단위)
+# =========================================================
+# 1. 표 전체 높이
+SUMMARY_TABLE_HEIGHT = 400
+DETAIL_TABLE_HEIGHT =400
+
+# 2. 업체별 합계 표 컬럼 너비
+SUMMARY_WIDTHS = {
+    "순위": 60,
+    "업체명": 250,
+    "총 합계금액": 150,
+    "우수제품 합계": 150,
+    "MAS 합계": 150,
+    "건수": 80
+}
+
+# 3. 상세 리스트 표 컬럼 너비
+DETAIL_WIDTHS = {
+    "납품요구번호": 130,
+    "납품요구변경번호": 80,
+    "납품요구일자": 110,
+    "납품요구접수일자": 110,
+    "품목일련번호": 100,
+    "업체명": 200,
+    "주문기관명": 150,
+    "수요기관명": 150,
+    "세부품명": 180,
+    "품명": 180,
+    "규격": 200,
+    "수량": 80,
+    "단가": 120,
+    "금액": 150,
+    "납품기한": 110,
+    "납품장소": 200
+}
+# =========================================================
+
 CACHE_FILE = "naramarket_cache.csv"
 DATES_FILE = "loaded_dates.txt"
 
-# 페이지 설정
 st.set_page_config(page_title="조달청 납품요구상세", layout="wide")
-st.title("🏛️ 조달청 종합쇼핑몰 납품요구상세 현황 (데이터 보존형)")
+st.title("🏛️ 조달청 종합쇼핑몰 납품요구상세 현황")
 
 BASE_URL = "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList"
 
-# --- 컬럼 매핑 사전 ---
 COLUMN_MAP = {
     "dlvrReqNo": "납품요구번호", "dlvrReqChngNo": "납품요구변경번호", "dlvrReqDate": "납품요구일자",
-    "ordrrNm": "주문기관명", "ordrrDivNm": "주문기관구분", "corpNm": "업체명",
-    "corpEntrprsDivNmNm": "기업구분", "prdctClsfcNo": "물품분류번호", "prdctClsfcNoNm": "물품분류명",
-    "prdctIdntNo": "물품식별번호", "prdctNm": "품명", "prdctSpecNm": "규격",
-    "prdctUnit": "단위", "prdctQty": "수량", "prdctPrc": "단가", "prdctAmt": "금액",
-    "dlvrDate": "납품기한", "dlvrPlcNm": "납품장소", "cntrctNo": "계약번호", "mainPrdctNm": "대표품명"
+    "dlvrReqRcptDate": "납품요구접수일자", "prdctSno": "품목일련번호", "ordrrNm": "주문기관명", 
+    "ordrrDivNm": "주문기관구분", "corpNm": "업체명", "corpEntrprsDivNmNm": "기업구분", 
+    "prdctClsfcNo": "물품분류번호", "prdctClsfcNoNm": "물품분류명", "prdctIdntNo": "물품식별번호", 
+    "prdctIdntNoNm": "세부품명", "prdctNm": "품명", "prdctSpecNm": "규격", "prdctUnit": "단위", 
+    "prdctQty": "수량", "prdctPrc": "단가", "prdctAmt": "금액", "dlvrDate": "납품기한", 
+    "dlvrPlcNm": "납품장소", "cntrctNo": "계약번호", "mainPrdctNm": "대표품명", 
+    "exclcProdctYn": "우수제품여부", "masYn": "MAS여부", "dminsttNm": "수요기관명"
 }
 
-# -----------------------------------------
-# 로컬 파일 저장/불러오기 함수
-# -----------------------------------------
-def save_data(df, dates):
-    """데이터프레임과 수집된 날짜 리스트를 파일로 저장"""
-    df.to_csv(CACHE_FILE, index=False, encoding='utf-8-sig')
+REVERSE_MAP = {v: k for k, v in COLUMN_MAP.items()}
+
+def save_data(df_to_save, dates_to_save):
+    df_to_save.to_csv(CACHE_FILE, index=False, encoding='utf-8-sig')
     with open(DATES_FILE, "w", encoding="utf-8") as f:
-        for d in dates:
+        for d in sorted(list(dates_to_save)):
             f.write(d.strftime("%Y-%m-%d") + "\n")
 
 def load_data():
-    """파일에서 데이터프레임과 수집된 날짜 리스트를 불러오기"""
-    df = pd.DataFrame()
-    dates = set()
-    if os.path.exists(CACHE_FILE):
-        df = pd.read_csv(CACHE_FILE, encoding='utf-8-sig')
+    loaded_df, loaded_dates = pd.DataFrame(), set()
+    if os.path.exists(CACHE_FILE) and os.path.getsize(CACHE_FILE) > 0:
+        try: loaded_df = pd.read_csv(CACHE_FILE, encoding='utf-8-sig')
+        except: pass
     if os.path.exists(DATES_FILE):
         with open(DATES_FILE, "r", encoding="utf-8") as f:
             for line in f:
-                dates.add(datetime.strptime(line.strip(), "%Y-%m-%d").date())
-    return df, dates
+                try: loaded_dates.add(datetime.strptime(line.strip(), "%Y-%m-%d").date())
+                except: continue
+    return loaded_df, loaded_dates
 
-# --- 세션 상태 초기화 (파일에서 먼저 읽어옴) ---
 if 'master_data' not in st.session_state:
-    init_df, init_dates = load_data()
-    st.session_state['master_data'] = init_df
-    st.session_state['loaded_dates'] = init_dates
+    st.session_state['master_data'], st.session_state['loaded_dates'] = load_data()
 
-# -----------------------------------------
-# API 관련 함수
-# -----------------------------------------
 def fetch_api(params, max_retry=5):
     for attempt in range(max_retry):
         try:
             response = requests.get(BASE_URL, params=params, timeout=30)
             if response.status_code == 429:
-                time.sleep(2 * (attempt + 1))
-                continue
+                time.sleep(2 * (attempt + 1)); continue
             response.raise_for_status()
             return response.json()
-        except Exception as e:
-            if attempt == max_retry - 1: raise e
+        except:
+            if attempt == max_retry - 1: raise
             time.sleep(1)
 
-def parse(data):
-    body = data.get("response", {}).get("body", {})
-    items = body.get("items", [])
+def parse(api_data):
+    items = api_data.get("response", {}).get("body", {}).get("items", [])
     if isinstance(items, dict): items = [items]
     return pd.DataFrame(items)
 
-# -----------------------------------------
-# 사이드바 설정
-# -----------------------------------------
 with st.sidebar:
     st.header("⚙️ 데이터 수집 설정")
     api_key = st.text_input("API 인증키 (Encoding)", type="password")
     today = datetime.today().date()
-    start = st.date_input("시작일", today - timedelta(days=7))
-    end = st.date_input("종료일", today - timedelta(days=1))
+    start = st.date_input("조회 시작일", today - timedelta(days=7))
+    end = st.date_input("조회 종료일", today - timedelta(days=1))
     target_product = st.text_input("물품분류명 (API 수집 필터)")
 
-    col1, col2 = st.columns(2)
-    search_button = col1.button("📡 데이터 불러오기", use_container_width=True, type="primary")
-    reset_button = col2.button("🗑️ 초기화", use_container_width=True)
+    c1, c2 = st.columns(2)
+    if c1.button("📡 데이터 불러오기", use_container_width=True, type="primary"):
+        if not api_key: st.error("⚠️ API 인증키를 입력해주세요.")
+        else:
+            try:
+                requested_dates = [start + timedelta(days=x) for x in range((end - start).days + 1)]
+                new_dates = [d for d in requested_dates if d not in st.session_state['loaded_dates']]
+                if not new_dates: st.info("ℹ️ 이미 수집된 기간입니다.")
+                else:
+                    all_new = []
+                    prog, status = st.progress(0), st.empty()
+                    for i, cur_date in enumerate(new_dates):
+                        d_str = cur_date.strftime("%Y%m%d")
+                        status.text(f"🌐 수집 중: {d_str}")
+                        page = 1
+                        while True:
+                            p = {"ServiceKey": api_key, "pageNo": page, "numOfRows": 100, "type": "json", "inqryDiv": "1", "inqryBgnDate": d_str, "inqryEndDate": d_str}
+                            if target_product.strip(): p["prdctClsfcNoNm"] = target_product.strip()
+                            data = fetch_api(p)
+                            df_tmp = parse(data)
+                            if df_tmp.empty: break
+                            all_new.append(df_tmp)
+                            if len(df_tmp) < 100: break
+                            page += 1; time.sleep(0.2)
+                        st.session_state['loaded_dates'].add(cur_date)
+                        prog.progress((i + 1) / len(new_dates))
+                    if all_new:
+                        new_df = pd.concat(all_new, ignore_index=True)
+                        combined = pd.concat([st.session_state['master_data'], new_df], ignore_index=True)
+                        st.session_state['master_data'] = combined
+                        save_data(combined, st.session_state['loaded_dates'])
+                        st.rerun()
+            except Exception as e: st.error(f"❌ 오류: {e}")
 
-    if reset_button:
-        if os.path.exists(CACHE_FILE): os.remove(CACHE_FILE)
-        if os.path.exists(DATES_FILE): os.remove(DATES_FILE)
-        st.session_state['master_data'] = pd.DataFrame()
-        st.session_state['loaded_dates'] = set()
+    if c2.button("🗑️ 초기화", use_container_width=True):
+        for f in [CACHE_FILE, DATES_FILE]:
+            if os.path.exists(f): os.remove(f)
+        st.session_state['master_data'], st.session_state['loaded_dates'] = pd.DataFrame(), set()
         st.rerun()
 
     st.markdown("---")
-    st.subheader("🎯 실시간 결과 필터")
     corp_filter = st.text_input("업체명 필터")
     div_filter = st.text_input("기업구분명 필터")
+    inst_filter = st.text_input("수요기관명 필터")
 
-# -----------------------------------------
-# 1. 누적 데이터 수집 로직
-# -----------------------------------------
-if search_button:
-    if not api_key:
-        st.error("⚠️ API 인증키를 입력해주세요.")
-    else:
-        try:
-            requested_dates = [start + timedelta(days=x) for x in range((end - start).days + 1)]
-            new_dates = [d for d in requested_dates if d not in st.session_state['loaded_dates']]
-
-            if not new_dates:
-                st.info("ℹ️ 해당 기간의 데이터는 이미 로컬에 저장되어 있습니다.")
-            else:
-                all_new_data = []
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-
-                for i, current_date in enumerate(new_dates):
-                    date_str = current_date.strftime("%Y%m%d")
-                    status_text.text(f"🌐 데이터 수집 중: {date_str} ({i+1}/{len(new_dates)})")
-                    
-                    page = 1
-                    while True:
-                        params = {
-                            "ServiceKey": api_key, "pageNo": page, "numOfRows": 100,
-                            "type": "json", "inqryDiv": "1", "inqryBgnDate": date_str, "inqryEndDate": date_str,
-                        }
-                        if target_product.strip():
-                            params["prdctClsfcNoNm"] = target_product.strip()
-
-                        data = fetch_api(params)
-                        df_tmp = parse(data)
-
-                        if df_tmp.empty: break
-                        all_new_data.append(df_tmp)
-                        if len(df_tmp) < 100: break
-                        page += 1
-                        time.sleep(0.2)
-                    
-                    st.session_state['loaded_dates'].add(current_date)
-                    progress_bar.progress((i + 1) / len(new_dates))
-
-                status_text.empty()
-                progress_bar.empty()
-
-                if all_new_data:
-                    new_df = pd.concat(all_new_data, ignore_index=True)
-                    combined = pd.concat([st.session_state['master_data'], new_df], ignore_index=True)
-                    
-                    # 중복 제거 및 최신 차수 유지
-                    if "prdctAmt" in combined.columns:
-                        combined["prdctAmt"] = pd.to_numeric(combined["prdctAmt"], errors="coerce").fillna(0)
-                    if "dlvrReqChngNo" in combined.columns:
-                        combined["dlvrReqChngNo"] = pd.to_numeric(combined["dlvrReqChngNo"], errors="coerce").fillna(0)
-                    else:
-                        combined["dlvrReqChngNo"] = 0
-
-                    if "dlvrReqNo" in combined.columns:
-                        combined = combined.sort_values(by=["dlvrReqNo", "dlvrReqChngNo"], ascending=[True, False])
-                        combined = combined.drop_duplicates(subset=["dlvrReqNo"], keep="first")
-                    
-                    # 세션 업데이트 및 파일 저장
-                    st.session_state['master_data'] = combined
-                    save_data(combined, st.session_state['loaded_dates'])
-                    st.success(f"✅ 새 데이터를 추가 수집하고 파일로 저장했습니다.")
-                else:
-                    # 데이터는 없어도 날짜는 넘어가도록 저장
-                    save_data(st.session_state['master_data'], st.session_state['loaded_dates'])
-                    st.info("ℹ️ 해당 기간에 새로운 데이터가 없습니다.")
-
-        except Exception as e:
-            st.error(f"❌ 오류 발생: {e}")
-
-# -----------------------------------------
-# 2. 화면 표시 (필터링 및 분석)
-# -----------------------------------------
 if not st.session_state['master_data'].empty:
-    raw_df = st.session_state['master_data'].copy()
+    df = st.session_state['master_data'].copy()
+    for kor, eng in REVERSE_MAP.items():
+        if kor in df.columns and eng not in df.columns: df[eng] = df[kor]
+
+    for col in ["prdctAmt", "dlvrReqChngNo", "prdctSno", "prdctPrc", "prdctQty"]:
+        if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    if 'dlvrReqNo' in df.columns:
+        curr_year_short = str(datetime.now().year)[2:4]
+        df['no_year_code'] = df['dlvrReqNo'].astype(str).str[1:3]
+        df = df[df['no_year_code'] == curr_year_short].copy()
+
+    if not df.empty and 'dlvrReqDate' in df.columns:
+        df['dt_temp'] = pd.to_datetime(df['dlvrReqDate'].astype(str).str.replace("-",""), format='%Y%m%d', errors='coerce')
+        df = df.sort_values(['dlvrReqNo', 'prdctSno', 'dlvrReqChngNo'], ascending=[True, True, False])
+        df = df.drop_duplicates(subset=['dlvrReqNo', 'prdctSno'], keep='first')
+        df = df[(df['dt_temp'].dt.date >= start) & (df['dt_temp'].dt.date <= end)]
     
-    date_col = next((c for c in ['납품요구일자', 'dlvrReqDate'] if c in raw_df.columns), None)
-            
-    if date_col:
-        raw_df[f'{date_col}_dt'] = pd.to_datetime(raw_df[date_col], errors='coerce')
-        mask = (raw_df[f'{date_col}_dt'].dt.date >= start) & (raw_df[f'{date_col}_dt'].dt.date <= end)
-        df = raw_df[mask].copy()
-        df = df.rename(columns=COLUMN_MAP)
-    else:
-        df = raw_df.rename(columns=COLUMN_MAP)
-
-    if corp_filter.strip():
-        col = "업체명" if "업체명" in df.columns else "corpNm"
-        if col in df.columns:
-            df = df[df[col].astype(str).str.contains(corp_filter.strip(), case=False, na=False)]
-    if div_filter.strip():
-        col = "기업구분" if "기업구분" in df.columns else "corpEntrprsDivNmNm"
-        if col in df.columns:
-            df = df[df[col].astype(str).str.contains(div_filter.strip(), case=False, na=False)]
-
-    st.info(f"📅 조회 기간: {start} ~ {end} (현재 {len(df):,}건 표시 중 / 누적 수집일: {len(st.session_state['loaded_dates'])}일)")
+    df_view = df.rename(columns=COLUMN_MAP)
     
-    if not df.empty:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("표시 건수", f"{len(df):,} 건")
-        
-        amt_col = "금액" if "금액" in df.columns else "prdctAmt"
-        if amt_col in df.columns:
-            total_amt = pd.to_numeric(df[amt_col], errors='coerce').sum()
-            c2.metric("표시 총액", f"{total_amt:,.0f} 원")
-        
-        c3.success("💾 로컬 저장소 동기화됨")
+    if corp_filter.strip(): df_view = df_view[df_view["업체명"].astype(str).str.contains(corp_filter.strip(), case=False, na=False)]
+    if div_filter.strip() and "기업구분" in df_view.columns: df_view = df_view[df_view["기업구분"].astype(str).str.contains(div_filter.strip(), case=False, na=False)]
+    if inst_filter.strip():
+        inst_col = "수요기관명" if "수요기관명" in df_view.columns else "주문기관명"
+        if inst_col in df_view.columns: df_view = df_view[df_view[inst_col].astype(str).str.contains(inst_filter.strip(), case=False, na=False)]
 
-        st.markdown("---")
-        corp_col = "업체명" if "업체명" in df.columns else "corpNm"
-        if corp_col in df.columns and amt_col in df.columns:
-            st.subheader("🏢 업체별 합계")
-            summary = df.groupby(corp_col)[amt_col].agg(['sum', 'count']).reset_index()
-            summary.columns = ["업체명", "합계금액", "건수"]
-            st.dataframe(summary.sort_values("합계금액", ascending=False).style.format({"합계금액": "{:,.0f}원", "건수": "{:,}건"}), use_container_width=True)
+    st.info(f"📅 조회 기간: {start} ~ {end} (총 {len(df_view):,}건)")
+    
+    if not df_view.empty:
+        # --- 업체별 합계 ---
+        st.subheader("🏢 업체별 금액 합계")
+        df_view["우수금액"] = df_view.apply(lambda x: x["금액"] if str(x.get("우수제품여부", "N")).upper() == "Y" else 0, axis=1)
+        df_view["MAS금액"] = df_view.apply(lambda x: x["금액"] if str(x.get("MAS여부", "N")).upper() == "Y" else 0, axis=1)
+        summary = df_view.groupby("업체명").agg({"금액": "sum", "우수금액": "sum", "MAS금액": "sum", "납품요구번호": "count"}).reset_index()
+        summary.columns = ["업체명", "총 합계금액", "우수제품 합계", "MAS 합계", "건수"]
+        summary = summary.sort_values("총 합계금액", ascending=False).reset_index(drop=True)
+        summary.insert(0, "순위", summary.index + 1)
+        
+        # 합계 표 출력
+        st.dataframe(
+            summary.style.format({"총 합계금액": "{:,.0f}원", "우수제품 합계": "{:,.0f}원", "MAS 합계": "{:,.0f}원", "건수": "{:,}건"}), 
+            use_container_width=True, hide_index=True, height=SUMMARY_TABLE_HEIGHT,
+            column_config={k: st.column_config.Column(width=v) for k, v in SUMMARY_WIDTHS.items()}
+        )
 
+        # --- 상세 리스트 ---
         st.subheader("📋 상세 리스트")
-        disp_cols = [c for c in df.columns if not c.endswith('_dt')]
-        st.dataframe(df[disp_cols], use_container_width=True)
+        disp_cols = ["납품요구번호", "납품요구변경번호", "납품요구일자", "납품요구접수일자", "품목일련번호", "업체명", "주문기관명", "수요기관명", "세부품명", "품명", "규격", "수량", "단가", "금액", "납품기한", "납품장소"]
+        final_disp = [c for c in disp_cols if c in df_view.columns]
+        fmt_dict = {c: "{:,.0f}" for c in ["금액", "단가", "수량", "품목일련번호", "납품요구변경번호"] if c in final_disp}
+        
+        # 상세 표 출력
+        st.dataframe(
+            df_view[final_disp].style.format(fmt_dict, na_rep="-"), 
+            use_container_width=True, hide_index=True, height=DETAIL_TABLE_HEIGHT,
+            column_config={k: st.column_config.Column(width=v) for k, v in DETAIL_WIDTHS.items()}
+        )
 
         output = BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            df[disp_cols].to_excel(writer, sheet_name="상세내역", index=False)
-            if 'summary' in locals():
-                summary.to_excel(writer, sheet_name="업체별합계", index=False)
-        output.seek(0)
-        st.download_button(label="📊 엑셀 다운로드", data=output, file_name=f"결과_{datetime.now().strftime('%H%M%S')}.xlsx", use_container_width=True)
+            df_view[final_disp].to_excel(writer, sheet_name="상세내역", index=False)
+            summary.to_excel(writer, sheet_name="업체별합계", index=False)
+        st.download_button(label="📊 엑셀 다운로드", data=output.getvalue(), file_name=f"조달현황_{datetime.now().strftime('%H%M%S')}.xlsx", use_container_width=True)
 else:
-    st.info("💡 사이드바에서 [데이터 불러오기]를 실행해 주세요. 수집된 데이터는 자동으로 저장되어 다음 실행 시 유지됩니다.")
+    st.info("💡 사이드바에서 [데이터 불러오기]를 실행해 주세요.")
